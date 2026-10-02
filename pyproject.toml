@@ -1,0 +1,46 @@
+[project]
+name = "nfhl"
+version = "0.1.0"
+description = "Make FEMA Flood Maps Cloud-Native: a GeoParquet + DuckDB pipeline (workshop)"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.5.6,<1.6",
+    "httpx>=0.27",
+    "pyogrio>=0.10",
+    "pyarrow>=17",
+    "shapely>=2.0",
+    "numpy>=1.26",
+    "pyyaml>=6",
+    "beautifulsoup4>=4.12",
+    "tenacity>=9",
+    "typer>=0.12",
+    "rich>=13",
+    "geoparquet-io>=1.4.0",
+]
+
+[dependency-groups]
+# installed by a plain `uv sync`, so attendees get pytest without an extra flag
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+nfhl = "nfhl.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nfhl"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# E501: the formatter wraps code, long SQL strings stay readable as they are.
+# B008: typer.Option in defaults is the typer idiom.
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

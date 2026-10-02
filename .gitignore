@@ -1,0 +1,13 @@
+data/
+*.duckdb
+*.duckdb.wal
+.venv/
+__pycache__/
+.env
+.ruff_cache/
+.pytest_cache/
+dist/
+.DS_Store
+claude.sh
+node_modules/
+CLAUDE.md

@@ -1,0 +1,51 @@
+# Workshop scope. Attendees run the live counties; everything else is a checkpoint on R2.
+states:
+  MA:
+    role: live
+    live_counties: [Barnstable, Hampden, Middlesex]   # coastal V zones, riverine AE, dense urban
+    note: home base, small volume, mixed typology
+  LA:
+    role: precomputed
+    note: subdivide showcase, parish-wide polygons, "parish" naming edge case
+  UT:
+    role: precomputed
+    note: conference state, incomplete NFHL coverage (16 of 29 counties), AREA NOT INCLUDED
+
+# Where precomputed checkpoints live (fill in after upload). The whole data/
+# tree is synced as is, so every stage path below base_url mirrors data/.
+checkpoints:
+  base_url: https://parquetry.geomermaids.com/nfhl-workshop
+  stages: [bronze, silver, silver_subdivided, duckdb, gold_analytic, control]
+
+fema:
+  catalog_url: https://hazards.fema.gov/femaportal/NFHL/searchResult
+  download_base: https://hazards.fema.gov/femaportal/NFHL/
+  layer: S_FLD_HAZ_AR
+  # Pre-fetched ZIPs, data/downloads/<fileName>, written by `nfhl download` only.
+  # Ingest uses one when present and otherwise fetches into memory without keeping it.
+  # Excluded from the R2 sync.
+  downloads_dir: downloads
+  # The portal also lists community-level DFIRMs (" TOWN OF AMHERST", numeric id).
+  # The pipeline keys on (state, county), so only county-wide ids (ending in C) are kept.
+  county_wide_only: true
+  user_agent: "Mozilla/5.0 (workshop; contact geomermaids.com)"
+  timeout_s: 120
+  retries: 3
+
+subdivide:
+  max_vertices: 100
+  variants: [100, 256, 512]
+
+gold_analytic:
+  h3_resolution: 5
+  # A res-5 cell file holds ~10k pieces: 20000 meant one row group per file and no
+  # pruning inside it. 2000 gives 5 or 6 groups per file, 1 ms per point lookup (measured).
+  row_group_size: 2000
+
+bench:
+  points: 100000
+  # Viewports for the map benchmark (bench --stage map): [xmin, ymin, xmax, ymax] and a screen width in px
+  viewports:
+    national: {bbox: [-125.0, 24.0, -66.0, 50.0], width_px: 1280}
+    louisiana: {bbox: [-94.1, 28.9, -88.8, 33.1], width_px: 1280}
+    new_orleans: {bbox: [-90.14, 29.87, -89.98, 30.06], width_px: 1280}

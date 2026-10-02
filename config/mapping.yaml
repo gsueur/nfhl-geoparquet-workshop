@@ -1,0 +1,73 @@
+# YAML-driven normalization. normalize.py turns this into one DuckDB SELECT.
+# Two sections:
+#   columns: schema mapping (target name, type, source expression, default)
+#   derived: domain logic expressed as SQL on the *target* columns
+# Source column names are the shapefile field names (10 char limit applies).
+
+source_layer: S_FLD_HAZ_AR
+source_crs: EPSG:4269
+
+columns:
+  # The zone's row in its county's bronze file: unique by construction. FEMA's
+  # FLD_AR_ID is not (54,955 ids repeat inside 393 counties, measured 2026-09-30).
+  - name: zone_id
+    type: INTEGER
+    expr: file_row_number
+  - name: source_feature_id
+    type: VARCHAR
+    expr: FLD_AR_ID
+  - name: dfirm_id
+    type: VARCHAR
+    expr: DFIRM_ID
+  - name: flood_zone
+    type: VARCHAR
+    expr: upper(trim(FLD_ZONE))
+  - name: zone_subtype
+    type: VARCHAR
+    expr: nullif(trim(ZONE_SUBTY), '')
+  - name: sfha
+    type: BOOLEAN
+    expr: SFHA_TF = 'T'
+  - name: static_bfe
+    type: DOUBLE
+    expr: try_cast(STATIC_BFE AS DOUBLE)
+    null_if: [-9999]          # FEMA no-data sentinel
+  - name: dual_zone
+    type: BOOLEAN
+    expr: DUAL_ZONE = 'T'
+    default: false
+  - name: geometry
+    type: GEOMETRY
+    expr: ST_MakeValid(geometry)
+
+derived:
+  - name: risk
+    type: VARCHAR
+    sql: |
+      CASE
+        -- first, because 'AREA NOT INCLUDED' also matches the AR zones below
+        WHEN flood_zone = 'AREA NOT INCLUDED' THEN 'unmapped'
+        WHEN flood_zone IN ('A','AO','AH','AE','A99','V','VE','AR')
+          OR flood_zone LIKE 'A1-_' OR flood_zone LIKE 'V1-_' OR flood_zone LIKE 'AR/%'
+          THEN '1 percent flood zone'
+        -- shaded X on the FIRM: moderate hazard, every subtype except minimal
+        WHEN flood_zone = 'B'
+          OR (flood_zone = 'X' AND (
+                zone_subtype LIKE '0.2 PCT%'
+             OR zone_subtype LIKE '1 PCT%'
+             OR zone_subtype LIKE 'AREA WITH REDUCED FLOOD RISK%'))
+          THEN '0.2 percent flood zone'
+        WHEN flood_zone IN ('C','X') THEN 'minimal'
+        WHEN flood_zone = 'D' THEN 'undetermined'
+        WHEN flood_zone = 'OPEN WATER' THEN 'water'
+        ELSE 'unmapped'
+      END
+  - name: floodplain
+    type: BOOLEAN
+    sql: sfha
+  - name: subzone
+    type: VARCHAR
+    sql: CASE WHEN dual_zone OR flood_zone LIKE 'AR/%' THEN flood_zone END
+
+# Columns injected by the pipeline, not read from the source
+context: [state, county, fema_update_date]

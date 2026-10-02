@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NFHL flood zones from GeoParquet</title>
+<link href="https://cdn.jsdelivr.net/npm/maplibre-gl@6.7.0/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/h3-js@4.5.0/dist/h3-js.umd.js"></script>
+<style>
+  html, body, #map { margin: 0; height: 100%; }
+  #panel { position: absolute; top: 8px; right: 8px; background: rgba(255,255,255,.94); padding: 8px 10px;
+           font: 12px/1.5 ui-monospace, Menlo, monospace; border-radius: 4px; max-width: 380px; }
+  #legend span { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 8px; vertical-align: middle; }
+  #stats { white-space: pre-wrap; }
+  #err { color: #b00; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <div id="stats">loading DuckDB-WASM and the indexes</div>
+  <div>
+    <label>layout <select id="layout">
+      <option value="gold_analytic">gold_analytic (H3 cells)</option>
+      <option value="silver_subdivided">silver_subdivided (county files)</option>
+      <option value="silver">silver (county files, original polygons)</option>
+    </select></label>
+  </div>
+  <div>
+    <label><input type="checkbox" id="nominimal" checked /> hide minimal risk</label>
+    <label><input type="checkbox" id="outline" /> outline pieces</label>
+  </div>
+  <div id="legend"></div>
+  <div id="err"></div>
+</div>
+<script type="module">
+// MapLibre + DuckDB-WASM + h3-js reading the gold_analytic cell files straight from object storage.
+// The same files answer "what is the risk at this point": the map is a side view of the analytic asset.
+import * as maplibregl from "https://cdn.jsdelivr.net/npm/maplibre-gl@6.7.0/dist/maplibre-gl.mjs";
+import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm";
+
+const params = new URLSearchParams(location.search);
+// The data root: config/workshop.yaml checkpoints.base_url. Under it: gold_analytic/,
+// silver/, silver_subdivided/, and the two indexes gold_analytic/cells.json and layouts.json.
+// For local files: python scripts/serve_local.py, then ?base=http://localhost:8000/data
+const BASE = params.get("base") || "https://parquetry.geomermaids.com/nfhl-workshop";
+// Past this many files the viewport is too wide for a layout with no overviews.
+const MAX_FILES = +(params.get("max") || 40);
+const COLORS = {
+  "1 percent flood zone": "#d7301f",
+  "0.2 percent flood zone": "#fc8d59",
+  "minimal": "#c7d5e0",
+  "undetermined": "#b39ddb",
+  "water": "#6baed6",
+  "unmapped": "#bdbdbd",
+};
+
+const stats = document.getElementById("stats");
+const err = document.getElementById("err");
+const outline = document.getElementById("outline");
+const nominimal = document.getElementById("nominimal");
+const layoutSelect = document.getElementById("layout");
+const fmtBytes = b => b >= 1e6 ? (b / 1e6).toFixed(1) + " MB" : (b / 1e3).toFixed(0) + " kB";
+
+async function initDuckDB() {
+  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+  const workerUrl = URL.createObjectURL(
+    new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" }));
+  const worker = new Worker(workerUrl);
+  const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING), worker);
+  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+  URL.revokeObjectURL(workerUrl);
+  const conn = await db.connect();
+  await conn.query("INSTALL spatial; LOAD spatial;");
+  return conn;
+}
+
+// cells.json: the cells that exist and their file sizes. layouts.json: the county files
+// of silver and silver_subdivided with their bbox. read_parquet([list]) fails on a missing file.
+let index, layouts, conn;
+
+// The cells the viewport overlaps (h3-js overlapping polyfill, same rule as the writer), kept to the ones present.
+function cellsFor(map) {
+  const b = map.getBounds();
+  // H3 walks polygon edges as great circles; a parallel is not one, so the ring is
+  // densified every 0.05 degrees or the north and south edges lose cells on wide views.
+  const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+  const steps = (a, z) => { const k = Math.max(1, Math.ceil(Math.abs(z - a) / 0.05)); return Array.from({ length: k + 1 }, (_, i) => a + (z - a) * i / k); };
+  const ring = [...steps(w, e).map(x => [n, x]), ...steps(n, s).slice(1).map(y => [y, e]),
+                ...steps(e, w).slice(1).map(x => [s, x]), ...steps(s, n).slice(1).map(y => [y, w])];
+  const flags = h3.POLYGON_TO_CELLS_FLAGS?.containmentOverlapping ?? "containmentOverlapping";
+  return h3.polygonToCellsExperimental(ring, index.res, flags).filter(c => c in index.cells);
+}
+
+// The files a layout needs for the viewport, with their total size.
+function filesFor(map, layout) {
+  if (layout === "gold_analytic") {
+    const cells = cellsFor(map);
+    return { files: cells.map(c => `gold_analytic/h3_r${index.res}=${c}/data_0.parquet`),
+             bytes: cells.reduce((s, c) => s + index.cells[c], 0) };
+  }
+  const b = map.getBounds();
+  const hit = Object.entries(layouts[layout]).filter(([, v]) =>
+    v.bbox[0] <= b.getEast() && v.bbox[2] >= b.getWest() && v.bbox[1] <= b.getNorth() && v.bbox[3] >= b.getSouth());
+  return { files: hit.map(([k]) => `${layout}/${k}`), bytes: hit.reduce((s, [, v]) => s + v.bytes, 0) };
+}
+
+let seq = 0;
+async function refresh(map) {
+  if (!conn || !index) return;
+  const my = ++seq;
+  const layout = layoutSelect.value;
+  const { files, bytes } = filesFor(map, layout);
+  const b = map.getBounds();
+  const t0 = performance.now();
+  let features = [];
+  try {
+    if (files.length > MAX_FILES) {
+      err.textContent = `${files.length} files (${fmtBytes(bytes)}) for this view, more than ${MAX_FILES}: zoom in. ` +
+        `No layout here has overviews.`;
+    } else if (files.length) {
+      const urls = files.map(f => `'${BASE}/${f}'`).join(",");
+      const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      // gold_analytic: bbox predicate first (row-group pruning), the geometry test on what is
+      // left, one row per piece (a straddling piece sits in two cell files).
+      // silver_subdivided: same rows, no bbox column, one file per county: every row is tested.
+      // silver: the original polygons, no piece_id, the million-vertex ones included.
+      // "minimal" is the remainder of every county: most of the pieces, nothing a basemap
+      // does not already show. Dropping it is the cheapest win a map can get.
+      const riskFilter = nominimal.checked ? "AND risk <> 'minimal'" : "";
+      const bboxFilter = layout === "gold_analytic"
+        ? `AND bbox.xmin <= ${e} AND bbox.xmax >= ${w} AND bbox.ymin <= ${n} AND bbox.ymax >= ${s}` : "";
+      const key = layout === "silver" ? "state, county, zone_id" : "state, county, zone_id, piece_id";
+      const sql = `SELECT any_value(risk) AS risk, ST_AsGeoJSON(any_value(geometry)) AS g
+                   FROM read_parquet([${urls}])
+                   WHERE true ${bboxFilter} ${riskFilter}
+                     AND ST_Intersects(geometry, ST_MakeEnvelope(${w}, ${s}, ${e}, ${n}))
+                   GROUP BY ${key}`;
+      const result = await conn.query(sql);
+      if (my !== seq) return;              // a newer viewport superseded this one
+      features = result.toArray().map(r => ({
+        type: "Feature", properties: { risk: r.risk }, geometry: JSON.parse(r.g) }));
+      err.textContent = "";
+    } else {
+      err.textContent = "";
+    }
+  } catch (e) {
+    err.textContent = String(e).slice(0, 300);
+  }
+  map.getSource("flood").setData({ type: "FeatureCollection", features });
+  stats.textContent = `${layout}  zoom ${map.getZoom().toFixed(1)}
+files ${files.length}  file bytes ${fmtBytes(bytes)}
+${layout === "silver" ? "polygons" : "pieces"} drawn ${features.length}${nominimal.checked ? " (minimal hidden)" : ""}  ${(performance.now() - t0).toFixed(0)} ms`;
+}
+
+// DuckDB-WASM boots and the index loads while the base map style loads.
+// Each step names itself on failure: "Load failed" alone (Safari) says nothing.
+const step = (what, p) => p.catch(e => { throw new Error(`${what}: ${e.message || e}`); });
+stats.textContent = `base ${BASE}\nloading the indexes and DuckDB-WASM`;
+const getJson = (what, url) => step(`${what} at ${url}`, fetch(url).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }));
+const ready = Promise.all([
+  getJson("cells.json", `${BASE}/gold_analytic/cells.json`),
+  getJson("layouts.json", `${BASE}/layouts.json`),
+  step("DuckDB-WASM from jsDelivr", initDuckDB()),
+]).then(([i, l, c]) => {
+  index = i; layouts = l; conn = c;
+  stats.textContent = `gold_analytic: ${Object.keys(index.cells).length} cell files at res ${index.res}; ` +
+    `silver and silver_subdivided: ${Object.keys(l.silver).length} county files`;
+}).catch(e => {
+  err.textContent = "init failed, " + String(e.message || e).slice(0, 300) +
+    (params.get("base") ? "" : ". No ?base= in the URL: the default points at the R2 checkpoint, which needs the bucket to be public. For local files: python scripts/serve_local.py, then ?base=http://localhost:8000/data");
+});
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: "https://tiles.openfreemap.org/styles/positron",
+  center: [-71.11, 42.37], zoom: 12,     // Harvard Square: the point of the workshop's lookup query
+});
+map.addControl(new maplibregl.NavigationControl());
+window.map = map;  // for the browser console during the workshop
+
+map.on("load", async () => {
+  map.addSource("flood", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "flood-fill", type: "fill", source: "flood",
+    paint: {
+      "fill-color": ["match", ["get", "risk"], ...Object.entries(COLORS).flat(), "#999"],
+      "fill-opacity": 0.45,
+    },
+  });
+  map.addLayer({
+    id: "flood-line", type: "line", source: "flood", layout: { visibility: "none" },
+    paint: { "line-color": "#333", "line-width": 0.4 },
+  });
+  document.getElementById("legend").innerHTML = Object.entries(COLORS)
+    .map(([k, c]) => `<span style="background:${c}"></span>${k}`).join("");
+  await ready;
+  refresh(map);
+});
+map.on("moveend", () => refresh(map));
+nominimal.addEventListener("change", () => refresh(map));
+layoutSelect.addEventListener("change", () => refresh(map));
+outline.addEventListener("change", () =>
+  map.setLayoutProperty("flood-line", "visibility", outline.checked ? "visible" : "none"));
+</script>
+</body>
+</html>
