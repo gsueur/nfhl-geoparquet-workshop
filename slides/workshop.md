@@ -765,9 +765,36 @@ Layout follows the dominant workload, not taste.
 
 <div class="now">
 
-**We now have** `gold_analytic/h3_r5=*/`: Parquet on object storage that answers a point lookup in a millisecond, exact at the cell edges, and the two county layouts that show why.
+**We now have** `gold_analytic/h3_r5=*/`: Parquet that answers a point lookup in a millisecond, exact at the cell edges, and the two county layouts that show why.
 
 </div>
+
+---
+
+<style scoped>section { font-size: 21px; } pre { font-size: 0.6em; } table { font-size: 0.72em; }</style>
+
+# `nfhl gold-analytic`
+## Same file, two places: local disk and R2
+
+```sql
+LOAD spatial;
+.timer on
+SELECT flood_zone, risk FROM 'data/gold_analytic/h3_r5=852a3067fffffff/data_0.parquet'
+WHERE bbox.xmin <= -71.1097 AND bbox.xmax >= -71.1097 AND bbox.ymin <= 42.3736 AND bbox.ymax >= 42.3736
+  AND ST_Contains(geometry, ST_Point(-71.1097, 42.3736));
+-- the same, FROM 'https://parquetry.geomermaids.com/nfhl-workshop/gold_analytic/h3_r5=852a3067fffffff/data_0.parquet'
+```
+
+| the Harvard Square lookup, cold | local disk | R2, over HTTPS | requests | bytes read |
+|---|---|---|---|---|
+| gold cell, bbox predicate | **2.8 ms** | about 1 s | 11 GETs | 0.9 MB of 4.7 |
+| gold cell, no bbox predicate | 4.8 ms | about 1 s | 8 GETs | 4.4 MB of 4.7 |
+| silver_subdivided, Middlesex | 104 ms | **4.1 s** | 4 GETs | 80.6 MB of 80.7 |
+
+On disk, pruning saves time. On object storage every request is a round trip: the bbox predicate reads five times fewer bytes and is no faster. What pays remotely is choosing the file, and the cell layout does it before the first byte moves. A lookup API keeps its data on local disk: `flood.duckdb`, 0.18 ms.
+Cold: fresh connection, no cache, median of 5 (R2 cells: 0.9 to 1.5 s over 9 runs). Expect slower on the conference wifi.
+
+<!-- modules/05a_gold_analytic.md -->
 
 ---
 
