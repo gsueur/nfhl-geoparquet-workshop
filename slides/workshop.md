@@ -225,7 +225,7 @@ $ nfhl check
 │ duckdb               │ 1.5.6           │
 │   spatial            │ 04270fe         │
 │   httpfs             │ 4bc690d         │
-│   h3                 │ v1.5.5          │
+│   h3                 │ v1.5.6          │
 │ pyogrio / GDAL       │ 0.13.0 / 3.12.4 │
 │ shapely              │ 2.1.2           │
 │ gpio (geoparquet-io) │ .venv/bin/gpio  │
