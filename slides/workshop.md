@@ -69,7 +69,7 @@ Every instruction gets four slides: why, example, mini-benchmark, what we have n
 
 `OPEN WATER` and `AREA NOT INCLUDED` also appear in `S_FLD_HAZ_AR`: placeholders for water bodies and unmapped communities, not hazard classes.
 
-Module 2 collapses all of this into one `risk` column: `1 percent flood zone`, `0.2 percent flood zone`, `minimal`, `undetermined`, `water`, `unmapped`.
+`nfhl normalize` collapses all of this into one `risk` column: `1 percent flood zone`, `0.2 percent flood zone`, `minimal`, `undetermined`, `water`, `unmapped`.
 
 <!-- modules/00_framing.md, Say, the dataset -->
 
@@ -715,9 +715,9 @@ SET disabled_optimizers = 'extension';
 # `nfhl gold-analytic`
 ## Why
 
-- Same data, on object storage, laid out for the lookup: **one file per H3 cell** (res 5), each piece in every cell it overlaps (1.3 percent of the pieces land in two files), Hilbert order inside, an explicit `bbox` column
+- Same data, on object storage, laid out for the lookup: **one file per H3 cell** (res 5), each piece in every cell it overlaps (1.3 percent of the pieces land in more than one file), Hilbert order inside, an explicit `bbox` column
 - A point becomes a cell id, the cell id a file name, the bbox column prunes row groups, so row groups are 2,000 rows: a dense cell holds about 11,000 pieces (Harvard Square's: 11,398) and one big row group would have nothing to skip. No index, no server
-- Subdivide made this cheap: small pieces overlap at most three cells
+- Subdivide made this cheap: 98.7 percent of the pieces sit in a single cell, the rest add 1.3 percent rows
 - The comparison is with what we already have: silver and silver_subdivided, one file per county. **We measure all three**
 - GeoParquet 2.0 has no `covering`: DuckDB never writes 1.1. The bbox column is a plain column DuckDB prunes on. Same effect, no spec support
 
@@ -734,7 +734,7 @@ $ nfhl gold-analytic
 ```
 
 ```
-gold_analytic/h3_r5=852a0693fffffff/data_0.parquet
+gold_analytic/h3_r5=852a3067fffffff/data_0.parquet
 ```
 
 ```sql
@@ -743,7 +743,7 @@ SELECT flood_zone, risk
 FROM 'gold_analytic/h3_r5=852a3067fffffff/data_0.parquet'          -- h3_latlng_to_cell_string(42.3736, -71.1097, 5)
 WHERE bbox.xmin <= -71.1097 AND bbox.xmax >= -71.1097 AND bbox.ymin <= 42.3736 AND bbox.ymax >= 42.3736
   AND ST_Contains(geometry, ST_Point(-71.1097, 42.3736));
--- X, minimal in 2.1 ms, one file of 4.7 MB, 1 row group of 6 read: was 103 ms on silver_subdivided
+-- X, minimal in 2.1 ms, one file of 4.7 MB, 2 row groups of 6 read: was 103 ms on silver_subdivided
 -- without the bbox predicate: 3.4 ms, every row group read. Without the cell: 48 ms, 1,029 files listed
 ```
 
@@ -784,7 +784,7 @@ Layout follows the dominant workload, not taste.
 - MapLibre draws; h3-js turns the viewport into the res-5 cells it overlaps (the writer's own rule, `containmentOverlapping`); DuckDB-WASM reads those files from object storage with range requests
 - Two indexes written by `nfhl gold-analytic`: `cells.json` (the cells that exist, their size) and `layouts.json` (the county files, their bbox and size). A reader must never ask for a file that is not there
 - One query per layout: the cells get the bbox predicate and one row per piece; the county files get every row tested; silver draws the original polygons, million-vertex ones included
-- `minimal` is the remainder of every county: most of the pieces, nothing a basemap does not already show. A checkbox drops it from the query. Measured: 40 percent fewer pieces at Harvard Square, none in New Orleans, where everything behind the levees is shaded X, a 0.2 percent zone
+- `minimal` is the remainder of every county: most of the pieces, nothing a basemap does not already show. A checkbox drops it from the query. Measured: 41 percent fewer pieces at Harvard Square, none in New Orleans, where everything behind the levees is shaded X, a 0.2 percent zone
 - The honest limit, on screen: past 40 files, whatever the layout, the page refuses and says why. These layouts serve point lookups; a wide map needs overviews, which is another workshop
 
 <!-- modules/06_serve.md -->
@@ -798,13 +798,13 @@ Layout follows the dominant workload, not taste.
 
 ```
 Harvard Square, zoom 12, minimal hidden, the same viewport from the three layouts:
-  gold_analytic        4 cell files     18.8 MB   5,362 pieces drawn
-  silver_subdivided    4 county files  190.5 MB   5,362 pieces drawn
-  silver               4 county files  179.7 MB     655 polygons drawn, the largest 951,116 vertices
-Louisiana, zoom 7:     456 files (1.0 GB) for this view, more than 40: zoom in. No layout here has overviews.
+  gold_analytic        4 cell files     18.8 MB   5,596 pieces drawn
+  silver_subdivided    4 county files  190.5 MB   5,596 pieces drawn
+  silver               4 county files  179.7 MB     692 polygons drawn, the largest 20,655 vertices
+Louisiana, whole state: 514 cell files (1.2 GB), more than 40: zoom in. No layout here has overviews.
 ```
 
-Same pieces on screen from the first two; ten times the bytes from the county files. Silver draws fewer, bigger polygons: the ones subdivide cut, largest polygon 100 vertices against 951,116. The `minimal` checkbox drops the remainder of every county: 40 percent fewer pieces here, none in New Orleans, where everything behind the levees is a 0.2 percent zone.
+Same pieces on screen from the first two; ten times the bytes from the county files. Silver draws fewer, bigger polygons: the ones subdivide cut, largest piece 100 vertices against 20,655 drawn; the 951,116-vertex polygon is a `minimal` remainder, and the checkbox keeps it off the map. The `minimal` checkbox drops the remainder of every county: 41 percent fewer pieces here, none in New Orleans, where everything behind the levees is a 0.2 percent zone.
 
 Run it on your own files: `python scripts/serve_local.py`, then `http://localhost:8000/web/index.html?base=http://localhost:8000/data`.
 
@@ -817,7 +817,7 @@ Run it on your own files: `python scripts/serve_local.py`, then `http://localhos
 
 ![w:1100](img/map_silver_harvard.png)
 
-Boston and Cambridge, the original polygons, minimal hidden: 655 polygons from 180 MB. Switch to gold_analytic: the same picture from 19 MB.
+Boston and Cambridge, the original polygons, minimal hidden: 692 polygons from 180 MB. Switch to gold_analytic: the same picture from 19 MB.
 
 <!-- modules/06_serve.md -->
 
@@ -831,7 +831,7 @@ Boston and Cambridge, the original polygons, minimal hidden: 655 polygons from 1
 | viewport | gold_analytic cells | county files |
 |---|---|---|
 | New Orleans (12 m/px) | 5 files, **238 MB**, 51 ms | 51 files, 1.67 GB, 552 ms |
-| Massachusetts (about 150 m/px) | 104 files, 278 MB, 133 ms | 11 files, 407 MB, 172 ms |
+| Massachusetts (about 200 m/px) | 104 files, 278 MB, 133 ms | 11 files, 407 MB, 172 ms |
 | Louisiana (395 m/px) | 514 files, 1.15 GB, 570 ms | 51 files, 1.67 GB, 599 ms |
 | national (4 km/px) | 1,029 files, 1.52 GB, 880 ms | 78 files, 2.20 GB, 776 ms |
 
@@ -867,7 +867,7 @@ Zoomed in, the cells win by ten. Zoomed out, both read the whole dataset, and th
 ## Example, mini-benchmark, what we have now
 
 ```
-$ nfhl verify --path data/gold_analytic/h3_r5=852a0693fffffff/data_0.parquet
+$ nfhl verify --path data/gold_analytic/h3_r5=852a3067fffffff/data_0.parquet
 GeoParquet 2.0 Metadata:
 ✓ Version 2.0.0
 ✓ Uses native Parquet GEOMETRY/GEOGRAPHY types
@@ -878,7 +878,7 @@ Spatial Order Analysis: ✓ Data appears to be spatially ordered
 Spec Validation: ✗ 1 failed, 31 passed
 ```
 
-32 spec checks in about a second, on any file of the pipeline. gpio also warns that 2,000-row groups are below its 10,000 target: our choice, the price of a one-row-group point lookup. The silver and subdivided files pass 31 of 32: gpio reports `coordinates outside valid range for CRS (1000 checked)` on both. That check is a gpio false positive on NAD83's area of use, filed as geoparquet-io issue 906; the coordinates are ordinary lon/lat.
+32 spec checks in about a second, on any file of the pipeline. gpio also warns that 2,000-row groups are below its 10,000 target: our choice, the price of reading 2 row groups of 6 instead of the whole cell. Every file of the pipeline passes 31 of 32: gpio reports `coordinates outside valid range for CRS (1000 checked)`. That check is a gpio false positive on NAD83's area of use, filed as geoparquet-io issue 906; the coordinates are ordinary lon/lat.
 
 <div class="now">
 
@@ -940,8 +940,8 @@ $ nfhl update --gold     # then rebuild gold_analytic
 | | |
 |---|---|
 | A full redo of the country | 2,504 downloads, 90 GB |
-| FEMA deliveries dated in the last year | 438 counties |
-| In the last month | 94 |
+| FEMA deliveries dated in the 12 months to 2026-09-30 | 438 counties |
+| In September 2026 | 94 |
 
 <div class="now">
 
@@ -983,7 +983,7 @@ bronze: 2504 counties to process, 4 jobs
 | county deliveries with a flood layer | 2,502 of 2,504, 50 states and Puerto Rico |
 | zones / pieces | 5,808,344 / 95,589,711 |
 | one national file, Hilbert order, bbox covering | 35.6 GB |
-| one point from it, over HTTPS (New Orleans) | 3.5 s |
+| one point from it, over HTTPS (New Orleans), cold | about 2 s |
 
 Published, with a Portolan catalog: `parquetry.geomermaids.com/nfhl/`
 
