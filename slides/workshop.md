@@ -325,7 +325,8 @@ Your pick is yours: same flags, your counties.
 
 # `nfhl ingest --state MA`
 
-Shown on Massachusetts; run it on your pick.
+Shown on Massachusetts: `--state MA` alone means its three default counties (Barnstable, Hampden, Middlesex). Any other state names its counties, on this stage and every later one:
+`nfhl ingest --state UT --county 'Salt Lake' --county Davis --county Weber`
 
 ---
 

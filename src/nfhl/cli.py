@@ -8,6 +8,7 @@ Without --state, --county or --all, a live state defaults to its live counties
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -32,6 +33,7 @@ def _scope(
     county: list[str] | None,
     all_counties: bool,
     all_states: bool = False,
+    cmd: str = "<stage>",
 ) -> tuple[str | None, list[str] | None]:
     """Which counties a stage touches.
 
@@ -54,10 +56,30 @@ def _scope(
     if all_counties:
         print("[yellow]--all needs --state XX. The whole country is --all-states.[/yellow]")
         raise typer.Exit(1)
-    where = f"--state {state}" if state else "no --state"
+    if not state:
+        print(
+            "[yellow]No --state: name a state and its counties, `--state XX --county A --county B`, "
+            "or --all-states for the whole country.[/yellow]"
+        )
+        raise typer.Exit(1)
+    # Refuse, but hand back a command that works: the two smallest counties of the state.
+    with control.control_db() as con:
+        rows = con.execute(
+            "SELECT county, zip_size_mb FROM import_log WHERE state = ? ORDER BY zip_size_mb",
+            [state],
+        ).fetchall()
+    if not rows:
+        print(
+            f"[yellow]{state} is not cataloged yet: run `nfhl catalog --state {state}` first.[/yellow]"
+        )
+        raise typer.Exit(1)
+    picks = " ".join(f"--county {shlex.quote(c)}" for c, _ in rows[:2])
+    mb = sum(r[1] or 0 for r in rows)
     print(
-        f"[yellow]{where}: no default county list. Pick counties with --county (repeatable), "
-        f"--all for the whole state, or --all-states. `nfhl counties --state {state or 'XX'}` lists them.[/yellow]"
+        f"[yellow]--state {state} has no default county list: name the counties. The two smallest:\n"
+        f"  nfhl {cmd} --state {state} {picks}\n"
+        f"All {len(rows)} with their size: `nfhl counties --state {state}`. "
+        f"The whole state: --all ({mb:.0f} MB zipped).[/yellow]"
     )
     raise typer.Exit(1)
 
@@ -83,7 +105,8 @@ def _run_stage(
     """
     from . import worker
 
-    state, counties = _scope(state, county, all_counties, all_states)
+    cmd = {"bronze": "ingest", "silver": "normalize", "subdivided": "subdivide"}.get(stage, stage)
+    state, counties = _scope(state, county, all_counties, all_states, cmd)
     with control.control_db() as con:
         rows = control.to_process(con, stage, state, None, force=force, loaded_only=loaded_only)
     if counties:
@@ -254,7 +277,7 @@ def download(
     """
     from .ingest import cache_path, fetch_zip
 
-    state, counties = _scope(state, county, all_counties, all_states)
+    state, counties = _scope(state, county, all_counties, all_states, "download")
     with control.control_db() as con:
         rows = control.to_process(con, "bronze", state, None, force=force)
     if counties:
