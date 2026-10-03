@@ -256,6 +256,8 @@ ok in 0.3 s
 
 ---
 
+<style scoped>section { font-size: 21px; } pre { font-size: 0.66em; } table { font-size: 0.72em; }</style>
+
 # `nfhl catalog --state XX`
 ## Why
 
@@ -266,11 +268,18 @@ ok in 0.3 s
 - **What it writes:** the local **control database** (`data/control/fema_control.duckdb`, table `import_log`): one row per county with state, county, DFIRM id, FEMA date, ZIP size, URL, status `new`. Nothing is downloaded
 - **What it prints:** that table for the state, sorted by ZIP size, so you pick two or three counties under 50 MB. From then on every command takes `--state XX --county A --county B`. `nfhl counties --state XX` prints the same table again later, from the local database, never from the portal, with the status each county has reached
 
+```sql
+-- the same table, straight from the control database: nfhl counties is this query
+$ duckdb -readonly data/control/fema_control.duckdb -c "
+    SELECT state, county, fema_update_date, round(zip_size_mb)::INT AS zip_mb, status
+    FROM import_log WHERE state = 'UT' ORDER BY zip_size_mb"
+```
+
 <!-- modules/01_ingest.md -->
 
 ---
 
-<style scoped>section { font-size: 21px; } pre { font-size: 0.66em; } table { font-size: 0.72em; }</style>
+<style scoped>section { font-size: 20px; } pre { font-size: 0.66em; } table { font-size: 0.72em; }</style>
 
 
 # `nfhl catalog --state UT`, then pick
@@ -300,25 +309,15 @@ $ nfhl catalog --state UT
 
 Our pick for this example: Salt Lake, Davis, Weber (46 MB). Every command from here on names them:
 `nfhl <stage> --state UT --county 'Salt Lake' --county Davis --county Weber`
-Your pick is yours: same flags, your counties. `nfhl counties --state UT` shows the table again later, from the local database, with each county's status.
-
-<!-- modules/01_ingest.md -->
-
----
-
-# `nfhl catalog --state UT`
-## Mini-benchmark
-
-- **What we measure:** the portal read once, the control database written once: one HTTP request, the 2.4 MB search-result page, parsed into 2,670 links for 56 states and territories, and the wall time.
-- **What to expect:** about 2 seconds, whatever the state: the page is the whole country, the filter happens locally.
-- **Why it matters:** this is the only thing the portal is ever asked for, and it is cheap enough to run every day. `nfhl update` (last section) is exactly this plus a date comparison.
-- **If it is off:** the portal is down or slow; the control database on R2 holds the catalog as of 2026-09-07, so you can continue from the checkpoints.
+Your pick is yours: same flags, your counties.
 
 <div class="now">
 
-**We now have** every county of the state in `import_log` with its FEMA date, URL and ZIP size, and a short list of the ones we chose. Nothing downloaded yet.
+**We now have** every county of the state in `import_log`, and our short list. Nothing downloaded yet.
 
 </div>
+
+<!-- modules/01_ingest.md -->
 
 ---
 
