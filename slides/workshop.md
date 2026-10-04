@@ -279,6 +279,39 @@ $ duckdb -readonly data/control/fema_control.duckdb -c "
 
 ---
 
+<style scoped>pre { font-size: 0.6em; }</style>
+
+# `nfhl catalog --state XX`
+## The key code
+
+```python
+# src/nfhl/catalog.py, list_datasets(): the search-result page is the catalog
+soup = BeautifulSoup(_fetch(cfg["catalog_url"]), "html.parser")
+links = soup.find_all("a", href=lambda h: h and "Download/ProductsDownLoadServlet" in h)
+for a in links:
+    url = cfg["download_base"] + a.get("href")
+    params = parse_qs(urlparse(url).query)
+    dfirm = params.get("DFIRMID", [None])[0]       # 25001C: county-wide, ends with C
+    st_name = params.get("state", [None])[0]       # MASSACHUSETTS
+    cty = params.get("county", [None])[0]          # BARNSTABLE COUNTY
+    fname = params.get("fileName", [None])[0]      # 25001C_20260119.zip
+    m = DATE_RE.search(fname)                      # the only place the date exists
+    rec = {
+        "state": STATES.get(st_name.strip().upper()),          # MA
+        "county": clean_county(cty),                           # Barnstable
+        "county_wide": dfirm.strip().upper().endswith("C"),
+        "fema_update_date": datetime.strptime(m.group(1), "%Y%m%d").date(),
+        "zip_size_mb": _zip_size_mb(a),                        # read from the same table row
+        "url": url.replace(" ", "%20"),
+    }
+```
+
+Abridged; comments added for the slide. Each record becomes one `import_log` row, status `new` (the SQL is in the `nfhl update` section).
+
+<!-- src/nfhl/catalog.py -->
+
+---
+
 <style scoped>section { font-size: 20px; } pre { font-size: 0.66em; } table { font-size: 0.72em; }</style>
 
 
@@ -338,6 +371,36 @@ Shown on Massachusetts: `--state MA` alone means its three default counties (Bar
 - pyogrio tags the geometry column as GeoArrow WKB **with its CRS**; DuckDB reads the tag: `GEOMETRY('EPSG:4269')` for free
 - The `.cpg` decides the encoding, latin1 otherwise, and the choice is logged
 - One county = one file. Run it twice, nothing happens: `import_log` says `bronze`, and remembers FEMA's file name and date (`zip_name`, `fema_update_date`)
+
+---
+
+<style scoped>pre { font-size: 0.6em; }</style>
+
+# `nfhl ingest --state MA`
+## The key code
+
+```python
+# src/nfhl/ingest.py: ZIP bytes in memory, one layer to Arrow, Arrow to GeoParquet 2.0
+zip_bytes, source = read_zip(url)          # httpx into RAM, or the pre-fetched ZIP
+meta, table = pyogrio.raw.read_arrow(zip_bytes, layer="S_FLD_HAZ_AR")
+                                           # GDAL mounts the bytes under /vsimem/: nothing on disk
+                                           # no .cpg in the ZIP: encoding="latin1", and it is logged
+con.register("src", table)                 # zero copy: geometry is already GEOMETRY('EPSG:4269')
+con.execute(f"""
+    COPY (
+        SELECT * EXCLUDE (geometry),
+               '{state}' AS state, '{county}' AS county,
+               DATE '{fema_update_date}' AS fema_update_date,
+               now() AS ingested_at,
+               ST_SetCRS(geometry, '{crs}') AS geometry
+        FROM src
+    ) TO '{out}' (FORMAT parquet, COMPRESSION zstd, GEOPARQUET_VERSION 'V2')
+""")
+```
+
+Abridged from `read_layer()` and `write_bronze()`. `out` is `bronze/state=MA/county=Barnstable/S_FLD_HAZ_AR.parquet`.
+
+<!-- src/nfhl/ingest.py -->
 
 ---
 
@@ -447,6 +510,44 @@ $ du -h data/bronze/state=MA/county=*/S_FLD_HAZ_AR.parquet
 
 ---
 
+<style scoped>pre { font-size: 0.6em; }</style>
+
+# `nfhl normalize --state MA`
+## The key code
+
+```yaml
+# config/mapping.yaml: one entry per target column, the domain logic as SQL
+- name: zone_id
+  type: INTEGER
+  expr: file_row_number
+- name: static_bfe
+  type: DOUBLE
+  expr: try_cast(STATIC_BFE AS DOUBLE)
+  null_if: [-9999]          # FEMA no-data sentinel
+- name: geometry
+  type: GEOMETRY
+  expr: ST_MakeValid(geometry)
+```
+
+```sql
+-- nfhl normalize --show-sql: build_select() compiles the YAML into one statement
+WITH mapped AS (
+    SELECT state, county, fema_update_date,
+           CAST(file_row_number AS INTEGER) AS zone_id,
+           CAST(CASE WHEN (try_cast(STATIC_BFE AS DOUBLE)) IN (-9999) THEN NULL
+                     ELSE (try_cast(STATIC_BFE AS DOUBLE)) END AS DOUBLE) AS static_bfe,
+           CAST(ST_MakeValid(geometry) AS GEOMETRY) AS geometry  -- and the other columns
+    FROM read_parquet('bronze/.../S_FLD_HAZ_AR.parquet', file_row_number = true)
+)
+SELECT * EXCLUDE (geometry), CAST((CASE ... END) AS VARCHAR) AS risk, ...,
+       ST_SetCRS(geometry, 'EPSG:4269') AS geometry
+FROM mapped
+```
+
+<!-- src/nfhl/normalize.py, config/mapping.yaml -->
+
+---
+
 <style scoped>section { font-size: 21px; } pre { font-size: 0.66em; } table { font-size: 0.72em; }</style>
 
 
@@ -544,23 +645,31 @@ geo  {"version":"2.0.0", ... "crs":{"$schema":"https://proj.org/schemas/v0.5/pro
 
 ---
 
-<style scoped>pre { font-size: 0.68em; } table { font-size: 0.72em; }</style>
+<style scoped>section { font-size: 20px; } pre { font-size: 0.6em; } table { font-size: 0.66em; }</style>
 
 # `nfhl subdivide --state MA`
 ## The whole stage
 
 ```sql
 COPY (
-    SELECT * EXCLUDE (geometry, d),
-           d.path[1] - 1 AS piece_id,
-           ST_SetCRS(d.geom, 'EPSG:4269') AS geometry
+    SELECT * EXCLUDE (geometry, d),                   -- every silver column, minus the zone and the struct
+           d.path[1] - 1 AS piece_id,                 -- path is 1-based: piece_id 0, 1, 2, ...
+           ST_SetCRS(d.geom, 'EPSG:4269') AS geometry -- the piece, CRS set again
     FROM (
-        SELECT *, unnest(ST_Dump(ST_Subdivide(geometry, 100))) AS d
+        SELECT *,
+               unnest(                                -- 3. the list becomes rows: one row per piece,
+                                                      --    the zone's columns repeated on each
+                   ST_Dump(                           -- 2. the collection becomes a list of {geom, path}
+                       ST_Subdivide(geometry, 100)    -- 1. one zone -> one GEOMETRYCOLLECTION of
+                   )                                  --    polygons of at most 100 vertices
+               ) AS d
         FROM read_parquet('data/silver/state=MA/county=Middlesex.parquet')
     )
-    WHERE ST_Dimension(d.geom) = 2 AND NOT ST_IsEmpty(d.geom)
+    WHERE ST_Dimension(d.geom) = 2 AND NOT ST_IsEmpty(d.geom)   -- polygons only
 ) TO 'data/silver_subdivided/state=MA/county=Middlesex.parquet' (FORMAT parquet, GEOPARQUET_VERSION 'V2')
 ```
+
+The zone under Harvard Square (`zone_id` 11222, X, minimal), one row with 951,116 vertices: **1.** a GEOMETRYCOLLECTION of 22,528 polygons, **2.** a list of 22,528 `{geom, path}` with `path` `[1]` to `[22528]`, **3.** 22,528 rows, `piece_id` 0 to 22,527, none above 100 vertices.
 
 | Middlesex | pieces | max vertices | invalid | area drift | time |
 |---|---|---|---|---|---|
@@ -660,6 +769,36 @@ Same operator (`SPATIAL_JOIN`), same bounding-box index. The speedup is the per-
 
 ---
 
+<style scoped>pre { font-size: 0.6em; }</style>
+
+# `nfhl load`
+## The key code
+
+```sql
+-- src/nfhl/stages.py, load_duckdb(): two statements and an ANALYZE
+CREATE TABLE flood AS
+WITH e AS (SELECT ST_Extent(ST_Extent_Agg(geometry)) AS b
+           FROM read_parquet('data/silver_subdivided/*/*.parquet'))
+SELECT * FROM read_parquet('data/silver_subdivided/*/*.parquet')
+ORDER BY ST_Hilbert(geometry, (SELECT b FROM e));
+
+CREATE INDEX flood_rtree ON flood USING RTREE (geometry);
+ANALYZE;
+
+-- then the validation, compared with the subdivided counties of import_log
+SELECT count(*) AS rows,
+       count(*) FILTER (WHERE NOT ST_IsValid(geometry)) AS invalid,
+       count(*) FILTER (WHERE risk IS NULL) AS null_risk,
+       count(DISTINCT (state, county)) AS counties
+FROM flood;
+```
+
+`ST_Hilbert` needs a `BOX_2D`: `ST_Extent(ST_Extent_Agg(...))` turns the aggregate extent into one.
+
+<!-- src/nfhl/stages.py -->
+
+---
+
 # `nfhl load`
 ## Example
 
@@ -722,6 +861,38 @@ SET disabled_optimizers = 'extension';
 - GeoParquet 2.0 has no `covering`: DuckDB never writes 1.1. The bbox column is a plain column DuckDB prunes on. Same effect, no spec support
 
 <!-- modules/05a_gold_analytic.md -->
+
+---
+
+<style scoped>pre { font-size: 0.6em; }</style>
+
+# `nfhl gold-analytic`
+## The key code
+
+```sql
+-- src/nfhl/stages.py, GOLD_ANALYTIC_SQL, with res 5 and 2,000-row groups filled in
+SET partitioned_write_max_open_files = 4096;   -- one data_0.parquet per cell, always
+COPY (
+    WITH e AS (SELECT ST_Extent(ST_Extent_Agg(geometry)) AS b
+               FROM read_parquet('data/silver_subdivided/*/*.parquet')),
+    pieces AS (
+        SELECT *, h3_polygon_wkt_to_cells_experimental_string(ST_AsText(geometry), 'overlap', 5) AS cells
+        FROM read_parquet('data/silver_subdivided/*/*.parquet')
+    )
+    SELECT * EXCLUDE (geometry, cells),
+           UNNEST(cells) AS h3_r5,                          -- every cell the piece overlaps
+           {xmin: ST_XMin(geometry), ymin: ST_YMin(geometry),
+            xmax: ST_XMax(geometry), ymax: ST_YMax(geometry)} AS bbox,
+           ST_SetCRS(geometry, 'EPSG:4269') AS geometry
+    FROM pieces
+    ORDER BY h3_r5, ST_Hilbert(geometry, (SELECT b FROM e))
+) TO 'data/gold_analytic' (FORMAT parquet, COMPRESSION zstd, GEOPARQUET_VERSION 'V2',
+                           PARTITION_BY (h3_r5), ROW_GROUP_SIZE 2000)
+```
+
+Then `cells.json`: the cells written and their sizes, the index every reader opens first.
+
+<!-- src/nfhl/stages.py -->
 
 ---
 
@@ -815,6 +986,34 @@ Cold: fresh connection, no cache, median of 5 (R2 cells: 0.9 to 1.5 s over 9 run
 - The honest limit, on screen: past 40 files, whatever the layout, the page refuses and says why. These layouts serve point lookups; a wide map needs overviews, which is another workshop
 
 <!-- modules/06_serve.md -->
+
+---
+
+<style scoped>pre { font-size: 0.6em; }</style>
+
+# `web/index.html`
+## The key code
+
+```js
+// web/index.html: viewport to cells, cells to file URLs, one query in DuckDB-WASM
+const flags = h3.POLYGON_TO_CELLS_FLAGS?.containmentOverlapping ?? "containmentOverlapping";
+const cells = h3.polygonToCellsExperimental(ring, index.res, flags)  // the writer's own rule
+                .filter(c => c in index.cells);                        // cells.json: files that exist
+const urls = cells.map(c => `'${BASE}/gold_analytic/h3_r${index.res}=${c}/data_0.parquet'`).join(",");
+const sql = `SELECT any_value(risk) AS risk, ST_AsGeoJSON(any_value(geometry)) AS g
+             FROM read_parquet([${urls}])
+             WHERE true
+               AND bbox.xmin <= ${e} AND bbox.xmax >= ${w} AND bbox.ymin <= ${n} AND bbox.ymax >= ${s}
+               AND risk <> 'minimal'
+               AND ST_Intersects(geometry, ST_MakeEnvelope(${w}, ${s}, ${e}, ${n}))
+             GROUP BY state, county, zone_id, piece_id`;    // a straddling piece sits in two cells
+const result = await conn.query(sql);
+map.getSource("flood").setData({ type: "FeatureCollection", features: result.toArray().map(...) });
+```
+
+Abridged from `cellsFor()` and `refresh()`; `ring` is the viewport, densified every 0.05 degrees, and `risk <> 'minimal'` is the checkbox.
+
+<!-- web/index.html -->
 
 ---
 
@@ -930,6 +1129,39 @@ Spec Validation: ✗ 1 failed, 31 passed
 - `--gold` rebuilds the derived layouts afterwards. Silver is per county; gold is rebuilt from silver
 
 <!-- modules/01_ingest.md, production mode -->
+
+---
+
+<style scoped>pre { font-size: 0.6em; }</style>
+
+# `nfhl update`
+## The key code
+
+```sql
+-- src/nfhl/control.py: the catalog row, inserted by nfhl catalog, refreshed by nfhl update
+INSERT INTO import_log
+    (state, county, fema_update_date, source_url, dfirm_id, zip_size_mb, zip_name, status)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'new')
+ON CONFLICT (state, county) DO UPDATE SET
+    source_url = excluded.source_url,
+    zip_name = excluded.zip_name,          -- and dfirm_id, zip_size_mb
+    -- a newer FEMA release invalidates everything downstream
+    status = CASE WHEN excluded.fema_update_date > import_log.fema_update_date
+                  THEN 'new' ELSE import_log.status END,
+    fema_update_date = greatest(excluded.fema_update_date, import_log.fema_update_date);
+```
+
+```sql
+-- to_process(): what a stage works on; nfhl update adds the last condition
+SELECT state, county, fema_update_date, source_url FROM import_log
+WHERE status = 'new'                -- the status before the stage (here: bronze)
+  AND bronze_at IS NOT NULL         -- refresh what we have, never start the rest
+ORDER BY state, county;
+```
+
+`nfhl update` never inserts: a dataset the control database does not hold is skipped before this SQL.
+
+<!-- src/nfhl/control.py -->
 
 ---
 <!-- _footer: "" -->

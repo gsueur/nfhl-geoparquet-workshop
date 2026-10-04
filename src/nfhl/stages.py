@@ -155,13 +155,14 @@ def load_duckdb(db_path: str | None = None) -> dict:
 
 
 # ---------------------------------------------------------------- gold analytic
-# One file per H3 cell of the piece centroid, Hilbert order within the file,
-# an explicit bbox struct for row-group pruning (GeoParquet 2.0 has no covering).
+# One file per H3 cell, Hilbert order within the file, an explicit bbox struct
+# for row-group pruning (GeoParquet 2.0 has no covering).
 # A piece goes into every cell it overlaps, not only the cell of its centroid:
 # a point near a cell edge must find the straddling pieces in its own file.
-# Overlap on subdivided pieces costs 1.4 percent duplicate rows (Middlesex:
-# 130,756 pieces, 132,644 assignments, at most 3 cells per piece). Readers
-# that union several cells de-duplicate on (state, county, zone_id, piece_id).
+# Overlap on subdivided pieces costs 1.3 percent extra rows (MA, LA, UT: 1.29
+# percent of the pieces sit in more than one cell, the most in 20; measured
+# 2026-10-03). Readers that union several cells de-duplicate on
+# (state, county, zone_id, piece_id).
 GOLD_ANALYTIC_SQL = """
 COPY (
     WITH e AS (SELECT ST_Extent(ST_Extent_Agg(geometry)) AS b FROM read_parquet('{src}')),
