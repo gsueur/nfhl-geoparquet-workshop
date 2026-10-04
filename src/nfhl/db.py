@@ -18,6 +18,10 @@ def parquet_options(**extra: str | int) -> str:
     opts: dict[str, str | int] = {
         "FORMAT": "parquet",
         "COMPRESSION": "zstd",
+        # DuckDB's zstd default is level 3. 15 is the distribution recommendation
+        # (decompression cost does not depend on the level). Measured on NFHL:
+        # about 3 percent smaller, writes 3 to 12x slower, reads unchanged.
+        "COMPRESSION_LEVEL": 15,
         "GEOPARQUET_VERSION": f"'{GEOPARQUET_VERSION}'",
     }
     opts.update(extra)

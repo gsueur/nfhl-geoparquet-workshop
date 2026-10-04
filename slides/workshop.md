@@ -394,11 +394,12 @@ con.execute(f"""
                now() AS ingested_at,
                ST_SetCRS(geometry, '{crs}') AS geometry
         FROM src
-    ) TO '{out}' (FORMAT parquet, COMPRESSION zstd, GEOPARQUET_VERSION 'V2')
+    ) TO '{out}' (FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 15, GEOPARQUET_VERSION 'V2')
 """)
 ```
 
 Abridged from `read_layer()` and `write_bronze()`. `out` is `bronze/state=MA/county=Barnstable/S_FLD_HAZ_AR.parquet`.
+Leave out `GEOPARQUET_VERSION 'V2'` and DuckDB 1.5.6 writes **GeoParquet 1.0.0**. Every `COPY` of the pipeline takes its options from one function, `parquet_options()`, and a test holds it to that.
 
 <!-- src/nfhl/ingest.py -->
 
@@ -412,15 +413,15 @@ Abridged from `read_layer()` and `write_bronze()`. `out` is `bronze/state=MA/cou
 
 | hop | held by | where | what it is | size |
 |---|---|---|---|---|
-| 1. `GET` the ZIP | httpx | network, then RAM | `25001C_20260119.zip`, 118 members, 34 layers | 33.8 MB |
+| 1. `GET` the ZIP | httpx | network, then RAM | `25001C_20261001.zip`, 118 members, 34 layers | 33.8 MB |
 | 2. pick one layer | zipfile | RAM, not extracted | the 5 members of `S_FLD_HAZ_AR` (shp, shx, dbf, prj, cpg) | 14.5 of 33.8 MB |
-| 3. read it | pyogrio (GDAL) | RAM, `/vsimem/` | one Arrow table, 4,498 rows, 20 columns, GeoArrow WKB, CRS and encoding in metadata | 21.4 MB |
+| 3. read it | pyogrio (GDAL) | RAM, `/vsimem/` | one Arrow table, 4,507 rows, 20 columns, GeoArrow WKB, CRS and encoding in metadata | 21.4 MB |
 | 4. register it | DuckDB | RAM, zero copy | a view on the table, geometry typed `GEOMETRY('EPSG:4269')` | 0 |
-| 5. `COPY TO` | DuckDB | **disk, first time** | `bronze/state=MA/county=Barnstable/S_FLD_HAZ_AR.parquet`, GeoParquet 2.0, ZSTD | 16.9 MB |
+| 5. `COPY TO` | DuckDB | **disk, first time** | `bronze/state=MA/county=Barnstable/S_FLD_HAZ_AR.parquet`, GeoParquet 2.0, ZSTD | 15.1 MB |
 
 The other 29 layers never leave the ZIP. The shapefile never exists as a file.
 The ZIP is never written: bronze is the copy we keep, the control database keeps FEMA's file name and date. `nfhl download` can pre-fetch ZIPs into `data/downloads/` and ingest uses them when present, which is how the three workshop states run offline.
-Measured on Barnstable: 2.9 s with the fetch, 0.4 s from a pre-fetched ZIP.
+Measured on Barnstable: about 4.4 s with the fetch, 1.3 s from a pre-fetched ZIP.
 
 ---
 
@@ -433,17 +434,17 @@ Measured on Barnstable: 2.9 s with the fetch, 0.4 s from a pre-fetched ZIP.
 ```
 $ nfhl ingest --state MA                  # Middlesex not pre-fetched
 bronze: 3 counties to process
-  ok MA Barnstable -> bronze (579 ms)
-  ok MA Hampden -> bronze (283 ms)
+  ok MA Barnstable -> bronze (1275 ms)
+  ok MA Hampden -> bronze (1336 ms)
   failed MA Middlesex: ConnectError: [Errno 54] Connection reset by peer   # FEMA dropped it
 
 $ find data/bronze -type f
-data/bronze/state=MA/county=Barnstable/S_FLD_HAZ_AR.parquet    # 17 MB
-data/bronze/state=MA/county=Hampden/S_FLD_HAZ_AR.parquet       # 19 MB
+data/bronze/state=MA/county=Barnstable/S_FLD_HAZ_AR.parquet    # 15 MB
+data/bronze/state=MA/county=Hampden/S_FLD_HAZ_AR.parquet       # 17 MB
 
 $ nfhl ingest --state MA                  # only the failed one is retried
 bronze: 1 counties to process
-  ok MA Middlesex -> bronze (9331 ms)     # fetched into memory, written once as bronze
+  ok MA Middlesex -> bronze (20784 ms)    # fetched into memory, written once as bronze
 
 $ nfhl ingest --state MA
   already past this stage, nothing to do: Barnstable, Hampden, Middlesex (--force redoes them)
@@ -477,9 +478,9 @@ $ du -h data/bronze/state=MA/county=*/S_FLD_HAZ_AR.parquet
 
 | county | ZIP | bronze | rows | max vertices | ingest, pre-fetched ZIP |
 |---|---|---|---|---|---|
-| Barnstable | 33 MB | 16 MB | 4,498 | 204,854 | 0.6 s |
-| Hampden | 32 MB | 18 MB | 2,289 | 191,082 | 0.3 s |
-| Middlesex | 121 MB | 73 MB | 11,754 | 951,114 | 1.6 s |
+| Barnstable | 33 MB | 15 MB | 4,507 | 204,807 | 1.3 s |
+| Hampden | 32 MB | 17 MB | 2,289 | 191,082 | 1.3 s |
+| Middlesex | 121 MB | 73 MB | 11,754 | 951,114 | 6.0 s |
 
 951,114 vertices in one polygon: the next section's problem.
 
@@ -579,9 +580,9 @@ END AS risk
 ```
 $ nfhl normalize --state MA
 silver: 3 counties to process
-  ok MA Barnstable -> silver (446 ms)
-  ok MA Hampden -> silver (614 ms)
-  ok MA Middlesex -> silver (5520 ms)
+  ok MA Barnstable -> silver (1217 ms)
+  ok MA Hampden -> silver (1723 ms)
+  ok MA Middlesex -> silver (9901 ms)
 ```
 
 ---
@@ -606,9 +607,9 @@ GROUP BY county ORDER BY county;
 
 | county | rows | invalid in bronze | invalid in silver | columns | silver | normalize |
 |---|---|---|---|---|---|---|
-| Barnstable | 4,498 | 3 | 0 | 24 to 15 | 16 MB | 0.4 s |
-| Hampden | 2,289 | 6 | 0 | 24 to 15 | 18 MB | 0.6 s |
-| Middlesex | 11,754 | 42 | 0 | 24 to 15 | 89 MB | 5.5 s |
+| Barnstable | 4,507 | 3 | 0 | 24 to 15 | 16 MB | 1.2 s |
+| Hampden | 2,289 | 6 | 0 | 24 to 15 | 17 MB | 1.7 s |
+| Middlesex | 11,754 | 42 | 0 | 24 to 15 | 74 MB | 9.9 s |
 
 `ST_MakeValid` rebuilds self-touching rings and slivers without moving a vertex (count in `import_log.silver_invalid_fixed`). Same rows, one schema, a `risk` column, and `zone_id`, a key per zone: FEMA's FLD_AR_ID repeats in 393 counties.
 
@@ -637,7 +638,7 @@ geo  {"version":"2.0.0", ... "crs":{"$schema":"https://proj.org/schemas/v0.5/pro
 - Zone X, "minimal hazard", is the remainder of the county: **one polygon, a million vertices**
 - A point-in-polygon test walks every vertex of every candidate
 - PostGIS solved it with `ST_Subdivide`; DuckDB 1.5.6 ships it, so the stage is one SQL statement: `ST_Subdivide`, then `ST_Dump` turns the pieces into rows, `path[1]` numbers them
-- The 40 lines of Python that did it before are still here, `--engine python`: same cap, same valid pieces, twice as fast on Louisiana, a small area drift. We keep SQL: less code, exact areas
+- The 40 lines of Python that did it before are still here, `--engine python`: same cap, same valid pieces, faster on Louisiana (82 s against 108 s, 4 jobs), slower on Middlesex, a small area drift. We keep SQL: less code, exact areas
 - Trade-offs, all of them: rows explode, area attributes lie, artificial edges, a soft cap
 - One thread per row group: silver is written with 1,000-row groups so DuckDB spreads a county over the cores; `--jobs N` spreads the counties
 
@@ -666,15 +667,15 @@ COPY (
         FROM read_parquet('data/silver/state=MA/county=Middlesex.parquet')
     )
     WHERE ST_Dimension(d.geom) = 2 AND NOT ST_IsEmpty(d.geom)   -- polygons only
-) TO 'data/silver_subdivided/state=MA/county=Middlesex.parquet' (FORMAT parquet, GEOPARQUET_VERSION 'V2')
+) TO 'data/silver_subdivided/state=MA/county=Middlesex.parquet' (FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 15, GEOPARQUET_VERSION 'V2')
 ```
 
 The zone under Harvard Square (`zone_id` 11222, X, minimal), one row with 951,116 vertices: **1.** a GEOMETRYCOLLECTION of 22,528 polygons, **2.** a list of 22,528 `{geom, path}` with `path` `[1]` to `[22528]`, **3.** 22,528 rows, `piece_id` 0 to 22,527, none above 100 vertices.
 
 | Middlesex | pieces | max vertices | invalid | area drift | time |
 |---|---|---|---|---|---|
-| DuckDB `ST_Subdivide` | 130,221 | 100 | 0 | 1e-14 | 5.6 s |
-| Python, `--engine python` | 130,243 | 100 | 0 | 2e-5 | 4.5 s |
+| DuckDB `ST_Subdivide` | 130,221 | 100 | 0 | 1e-14 | 7.4 s |
+| Python, `--engine python` | 130,243 | 100 | 0 | 2e-5 | 9.7 s |
 
 <!-- modules/03_subdivide.md -->
 
@@ -686,14 +687,14 @@ The zone under Harvard Square (`zone_id` 11222, X, minimal), one row with 951,11
 ```
 $ nfhl subdivide --state MA
 subdivided: 3 counties to process
-  ok MA Barnstable -> subdivided (1178 ms)
-  ok MA Hampden -> subdivided (2524 ms)
-  ok MA Middlesex -> subdivided (5569 ms)
+  ok MA Barnstable -> subdivided (2169 ms)
+  ok MA Hampden -> subdivided (3655 ms)
+  ok MA Middlesex -> subdivided (7321 ms)
 ```
 
 | county | silver rows | subdivided rows | ratio | max vertices before | after |
 |---|---|---|---|---|---|
-| Barnstable | 4,498 | 25,798 | 5.7 | 204,854 | 100 |
+| Barnstable | 4,507 | 25,804 | 5.7 | 204,807 | 100 |
 | Hampden | 2,289 | 32,418 | 14.2 | 191,082 | 100 |
 | Middlesex | 11,754 | 130,221 | 11.1 | 951,114 | 100 |
 
@@ -886,7 +887,7 @@ COPY (
            ST_SetCRS(geometry, 'EPSG:4269') AS geometry
     FROM pieces
     ORDER BY h3_r5, ST_Hilbert(geometry, (SELECT b FROM e))
-) TO 'data/gold_analytic' (FORMAT parquet, COMPRESSION zstd, GEOPARQUET_VERSION 'V2',
+) TO 'data/gold_analytic' (FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 15, GEOPARQUET_VERSION 'V2',
                            PARTITION_BY (h3_r5), ROW_GROUP_SIZE 2000)
 ```
 
@@ -1176,11 +1177,11 @@ ORDER BY state, county;
 $ nfhl update --state MA          # FEMA re-released Barnstable on 2026-10-01
 11 cataloged counties checked against 11 on the portal, 1 with a newer FEMA delivery; nothing added
 bronze: 1 counties to process
-  ok MA Barnstable -> bronze (2873 ms)
+  ok MA Barnstable -> bronze (5277 ms)
 silver: 1 counties to process
-  ok MA Barnstable -> silver (394 ms)
+  ok MA Barnstable -> silver (1195 ms)
 subdivided: 1 counties to process
-  ok MA Barnstable -> subdivided (1147 ms)
+  ok MA Barnstable -> subdivided (2229 ms)
 
 $ nfhl update --state MA          # nothing newer at FEMA
 11 cataloged counties checked against 11 on the portal, 0 with a newer FEMA delivery; nothing added

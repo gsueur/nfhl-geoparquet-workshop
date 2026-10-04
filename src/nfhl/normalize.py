@@ -75,4 +75,7 @@ def normalize_county(state: str, county: str) -> dict:
 
 
 def show_sql() -> str:
-    return build_select(config.load("mapping"), "read_parquet('bronze/.../S_FLD_HAZ_AR.parquet', file_row_number = true)")
+    return build_select(
+        config.load("mapping"),
+        "read_parquet('bronze/.../S_FLD_HAZ_AR.parquet', file_row_number = true)",
+    )
