@@ -3,21 +3,66 @@ marp: true
 theme: default
 paginate: true
 style: |
-  section { font-size: 23px; }
-  section.lead h1 { font-size: 2em; }
-  h1 { font-size: 1.5em; }
-  h2 { font-size: 1.1em; color: #555; font-weight: normal; margin-top: -0.4em; }
-  code { font-size: 0.85em; }
-  pre { font-size: 0.72em; }
-  table { font-size: 0.78em; }
-  .now { background: #eef6ee; border-left: 6px solid #4a8; padding: 0.4em 0.8em; margin-top: 0.6em; }
-  .why { color: #333; }
-  footer { font-size: 0.6em; color: #999; }
+  /* After the GeoParquet Cookbook deck (Keynote Minimalist Light): Produkt titles,
+     Graphik body, gray ink, pale green and red panels. Fonts are local on the
+     presenter's Mac; the fallbacks keep other machines readable. */
+  :root { --ink: #53585F; --muted: #8B8F93; --rule: #C0C0C0; --line: #E4E4E2;
+          --geom: #FF9800; --bbox: #1CAF7A; --warn: #EB6733; --warn-bg: #FBDFD5;
+          --ok-bg: #CDE9DB; --code-bg: #F3F3F2;
+          --title: 'Produkt', 'Rockwell', Georgia, serif;
+          --body: 'Graphik', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+          --mono: 'SF Mono', Menlo, Consolas, monospace; }
+  section { font-size: 23px; background: #fff; color: var(--ink); font-family: var(--body);
+            font-weight: 300; padding: 52px 72px 56px; line-height: 1.4; }
+  section { align-content: safe start; }
+  h1 { font-family: var(--title); font-weight: 200; font-size: 1.75em; color: var(--ink);
+       letter-spacing: -0.01em; margin: 0 0 0.05em; border: none; padding: 0; line-height: 1.15; }
+  h1 code { font-family: var(--title); font-weight: 200; font-size: 1em; background: none;
+            color: var(--ink); padding: 0; }
+  h2 { font-family: var(--body); font-weight: 300; font-size: 0.72em; color: var(--muted);
+       margin: 0 0 0.9em; border: none; padding: 0; }
+  h2 code { font-size: 0.95em; }
+  h3 { font-weight: 500; color: var(--ink); }
+  strong { font-weight: 500; color: #3E4248; }
+  a { color: var(--ink); text-decoration-color: var(--rule); }
+  ul, ol { padding-left: 1.1em; }
+  li { margin: 0.15em 0; }
+  li::marker { color: var(--rule); }
+  ol > li::marker { color: var(--muted); }
+  code { font-family: var(--mono); font-weight: 400; font-size: 0.8em; background: var(--code-bg); color: var(--ink);
+         border-radius: 3px; padding: 0.1em 0.3em; }
+  pre { font-size: 0.72em; background: var(--code-bg); border: none; border-radius: 4px;
+        padding: 0.8em 1em; line-height: 1.35; }
+  pre code { background: none; padding: 0; font-size: 1em; }
+  pre .hljs-comment { color: var(--muted); font-style: normal; }
+  table { font-size: 0.78em; border-collapse: collapse; }
+  table th, table td { border: none; border-bottom: 1px solid var(--line); background: #fff;
+                       padding: 0.35em 0.9em 0.35em 0; text-align: left; }
+  table th { font-weight: 400; color: var(--muted); border-bottom: 1px solid var(--rule); }
+  table tr:nth-child(2n) td { background: #fff; }
+  table code { background: none; padding: 0; }
+  img { background: none; }
+  .now { background: var(--ok-bg); border: none; border-radius: 3px; padding: 0.5em 0.9em;
+         margin-top: 0.8em; color: var(--ink); }
+  .now code { background: rgba(255,255,255,0.55); }
+  .why { color: var(--ink); }
+  footer { font-family: var(--body); font-weight: 300; font-size: 12px; color: var(--muted);
+           left: 72px; bottom: 22px; }
+  section::after { font-family: var(--body); font-weight: 300; font-size: 12px; color: var(--muted);
+                   right: 72px; bottom: 22px; }
+  section.lead { align-content: safe center; }
+  section.lead h1 { font-size: 2.6em; text-align: center; }
+  section.lead p { text-align: center; color: var(--muted); }
+  section.title { align-content: safe center; }
+  section.title h1 { font-size: 2.6em; margin-bottom: 0.15em; }
+  section.title h2 { font-family: var(--title); font-weight: 200; font-size: 1.35em; margin: 0; }
+  section.title p { position: absolute; left: 72px; bottom: 44px; font-size: 0.7em; color: var(--ink); }
 footer: "Make FEMA Flood Maps Cloud-Native · CNG Forum 2026 · Guillaume SUEUR"
 ---
 
-<!-- _class: lead -->
+<!-- _class: title -->
 <!-- _paginate: false -->
+<!-- _footer: "" -->
 
 # Make FEMA Flood Maps Cloud-Native
 
@@ -30,6 +75,15 @@ Cloud Native Geospatial Forum, October 2026
 Script: modules/README.md (the spine) and modules/00_framing.md.
 Every instruction gets four slides: why, example, mini-benchmark, what we have now.
 -->
+
+---
+
+# The flood map
+## A FEMA FIRMette, Calcasieu Parish, Louisiana: panel 22019C0453F, effective 2/18/2011
+
+![h:480](img/firmette_calcasieu.png)
+
+<!-- What everyone has seen: the printable map. The rest of the workshop is the data behind it. -->
 
 ---
 
@@ -1042,7 +1096,7 @@ Run it on your own files: `python scripts/serve_local.py`, then `http://localhos
 # `web/index.html`
 ## Harvard Square from `silver`
 
-![w:1100](img/map_silver_harvard.png)
+![h:460](img/map_silver_harvard.png)
 
 Boston and Cambridge, the original polygons, minimal hidden: 692 polygons from 180 MB. Switch to gold_analytic: the same picture from 19 MB.
 
