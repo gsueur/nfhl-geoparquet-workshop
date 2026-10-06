@@ -16,6 +16,7 @@ dependencies = [
     "typer>=0.12",
     "rich>=13",
     "geoparquet-io>=1.4.0",
+    "duckdb-cli>=1.5.6",
 ]
 
 [dependency-groups]
