@@ -1295,11 +1295,44 @@ bronze: 2504 counties to process, 4 jobs
 | | |
 |---|---|
 | county deliveries with a flood layer | 2,502 of 2,504, 50 states and Puerto Rico |
-| zones / pieces | 5,808,344 / 95,589,711 |
-| one national file, Hilbert order, bbox covering | 35.6 GB |
-| one point from it, over HTTPS (New Orleans), cold | about 2 s |
+| zones / pieces, published today | 5,808,099 / 95,572,904 |
+| one file per delivery, Hilbert order, bbox covering, plus an index | 2,502 files, 35.1 GB |
+| one point (New Orleans), over HTTPS, cold | index 1 s, then its two candidate files 7 s |
 
-Published, with a Portolan catalog: `parquetry.geomermaids.com/nfhl/`
+Published, with a Portolan catalog: `parquetry.geomermaids.com/nfhl/`, refreshed daily against FEMA's list
+
+---
+<!-- _footer: "" -->
+
+<style scoped>section { font-size: 18px; } pre { font-size: 0.7em; } table { font-size: 0.8em; }</style>
+
+# Query the published dataset
+## `nfhl/latest/`: an index, `counties.parquet` (400 KB), then one file per delivery. A bare DuckDB CLI, over HTTPS
+
+```sql
+-- The FIRMette pin: the index names the file, the bbox covering picks the row group
+SELECT path FROM 'https://parquetry.geomermaids.com/nfhl/latest/counties.parquet'
+WHERE bbox.xmin <= -93.3548 AND bbox.xmax >= -93.3548 AND bbox.ymin <= 30.1997 AND bbox.ymax >= 30.1997;
+-- state=LA/22019C.parquet
+SELECT flood_zone, sfha, risk FROM 'https://parquetry.geomermaids.com/nfhl/latest/state=LA/22019C.parquet'
+WHERE bbox.xmin <= -93.3548 AND bbox.xmax >= -93.3548 AND bbox.ymin <= 30.1997 AND bbox.ymax >= 30.1997
+  AND ST_Contains(geometry, ST_Point(-93.3548, 30.1997));
+-- AE, true, 1 percent flood zone
+```
+
+| question | reads | time | answer |
+|---|---|---|---|
+| the country: deliveries, states, zones, size | the index | 0.7 s | 2,502, 51, 5,808,099 zones, 35.1 GB |
+| what FEMA changed last | the index | 0.2 s | 8 deliveries dated 2026-10-05 (Bexar TX, Johnson KS...) |
+| the FIRMette pin, above | index, then one row group | 0.8 s + 5.0 s | zone AE, in the SFHA |
+| the FIRMette frame, bbox filter only | one file | 0.5 s | 2 zones X 0.2 percent, 1 AE, 1 X minimal |
+| Calcasieu Parish area by risk, `ST_Area_Spheroid` | one whole file | 8.5 s | 1 percent zone: 1,330 km², 46.9 percent |
+| Middlesex zones by risk, `s3://.../state=MA/*.parquet` | one state, S3 glob | 1.8 s | 11,754 zones, as in our ingest |
+| SFHA zones per state, `state=*/*.parquet` | 2,502 files | 327 s | FL first: 253,109 of 594,017 |
+
+Count zones with `piece_id = 0`, not `count(*)`. `ST_Area_Spheroid` wants lat/lon: `ST_FlipCoordinates` first, or NaN.
+
+<!-- Measured 2026-10-06 from a laptop. The pin is read off the FIRMette corners (approximate). The 327 s national scan is not for live: zones per state alone come from the index in under a second. The S3 queries need SET s3_endpoint='s3.geomermaids.com', s3_url_style='path', empty keys (see the collection AGENTS.md). -->
 
 ---
 
