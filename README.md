@@ -48,6 +48,8 @@ uv run nfhl verify                 # geoparquet-io (gpio) side check of one file
 Every stage reads its worklist from `import_log` and only processes counties
 sitting at the previous status. Rerun a stage with `--force`, widen it with
 `--all` (every county of the state) or narrow it with `--county Barnstable`.
+Repeat `--county` for each county. Names containing a space must be quoted,
+or the shell splits them in two: `--county Middlesex --county "New Haven"`.
 `--all-states` runs every county the catalog registered, whatever the state
 (`nfhl catalog` without `--state` registers the whole country).
 Ingest, normalize and subdivide take `--jobs N` to run N counties at once in
